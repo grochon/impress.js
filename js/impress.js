@@ -227,7 +227,9 @@
                 init: empty,
                 goto: empty,
                 prev: empty,
-                next: empty
+                next: empty,
+                zoomTo: empty,
+                zoomBy: empty
             };
         }
         
@@ -415,9 +417,86 @@
             return (step && step.id && stepsData["impress-" + step.id]) ? step : null;
         };
         
-        // used to reset timeout for `impress:stepenter` event
-        var stepEnterTimeout = null;
+        // used to reset timeout for changeView callback
+        var changeViewTimeout = null;
         
+        // change the view to the target position
+        var changeView = function ( target, duration, callback ) {
+
+            // Check what type of transition this is.
+            //
+            // This information is used to alter the transition style:
+            // when we are moving and zooming in - we start with move and rotate transition
+            // and the scaling is delayed, but when we are moving and zooming out we start
+            // with scaling down and move and rotation are delayed. when we are only moving
+            // or only zooming, neither are delayed.
+            var zoomin = target.scale > currentState.scale;
+            var zoom = target.scale !== currentState.scale;
+            var move = target.translate.x !== currentState.translate.x 
+                        || target.translate.y !== currentState.translate.y 
+                        || target.translate.z !== currentState.translate.z
+                        || target.rotate.x !== currentState.rotate.x 
+                        || target.rotate.y !== currentState.rotate.y 
+                        || target.rotate.z !== currentState.rotate.z;
+            
+            duration = toNumber(duration, config.transitionDuration);
+            var delay = (duration / 2);
+            
+            var targetScale = target.scale * windowScale;
+            
+            // Now we alter transforms of `root` and `canvas` to trigger transitions.
+            //
+            // And here is why there are two elements: `root` and `canvas` - they are
+            // being animated separately:
+            // `root` is used for scaling and `canvas` for translate and rotations.
+            // Transitions on them are triggered with different delays (to make
+            // visually nice and 'natural' looking transitions), so we need to know
+            // that both of them are finished.
+            var delayZoom = zoom && move && zoomin;
+            css(root, {
+                // to keep the perspective look similar for different scales
+                // we need to 'scale' the perspective, too
+                transform: perspective( config.perspective / targetScale ) + scale( targetScale ),
+                transitionDuration: duration + "ms",
+                transitionDelay: (delayZoom ? delay : 0) + "ms"
+            });
+
+            var delayMove = zoom && move && !zoomin;
+            css(canvas, {
+                transform: rotate(target.rotate, true) + translate(target.translate),
+                transitionDuration: duration + "ms",
+                transitionDelay: (delayMove ? delay : 0) + "ms"
+            });
+            
+            if (callback) {
+                // Here is a tricky part...
+                //
+                // If there is no change in scale or no change in rotation and translation, it means there was actually
+                // no delay - because there was no transition on `root` or `canvas` elements.
+                // We want to trigger the callback in the correct moment, so here we check if delay should 
+                // be taken into account.
+                var callbackDelay = duration + (delayZoom || delayMove ? delay : 0);
+                
+                // And here is where we trigger the callback.
+                // We simply set up a timeout to fire it taking transition duration (and possible delay) into account.
+                //
+                // I really wanted to make it in more elegant way. The `transitionend` event seemed to be the best way
+                // to do it, but the fact that I'm using transitions on two separate elements and that the `transitionend`
+                // event is only triggered when there was a transition (change in the values) caused some bugs and 
+                // made the code really complicated, cause I had to handle all the conditions separately. And it still
+                // needed a `setTimeout` fallback for the situations when there is no transition at all.
+                // So I decided that I'd rather make the code simpler than use shiny new `transitionend`.
+                //
+                // If you want learn something interesting and see how it was done with `transitionend` go back to
+                // version 0.5.2 of impress.js: http://github.com/bartaz/impress.js/blob/0.5.2/js/impress.js
+                window.clearTimeout(changeViewTimeout);
+                changeViewTimeout = window.setTimeout(callback, callbackDelay);
+            }
+            
+            // store current state
+            currentState = target;
+        };
+
         // `goto` API function that moves to step given with `el` parameter (by index, id or element),
         // with a transition `duration` optionally given as second parameter.
         var goto = function ( el, duration ) {
@@ -462,88 +541,24 @@
                 scale: 1 / step.scale
             };
             
-            // Check if the transition is zooming in or not.
-            //
-            // This information is used to alter the transition style:
-            // when we are zooming in - we start with move and rotate transition
-            // and the scaling is delayed, but when we are zooming out we start
-            // with scaling down and move and rotation are delayed.
-            var zoomin = target.scale >= currentState.scale;
-            
-            duration = toNumber(duration, config.transitionDuration);
-            var delay = (duration / 2);
-            
             // if the same step is re-selected, force computing window scaling,
             // because it is likely to be caused by window resize
             if (el === activeStep) {
                 windowScale = computeWindowScale(config);
             }
             
-            var targetScale = target.scale * windowScale;
-            
             // trigger leave of currently active element (if it's not the same step again)
             if (activeStep && activeStep !== el) {
                 onStepLeave(activeStep);
             }
             
-            // Now we alter transforms of `root` and `canvas` to trigger transitions.
-            //
-            // And here is why there are two elements: `root` and `canvas` - they are
-            // being animated separately:
-            // `root` is used for scaling and `canvas` for translate and rotations.
-            // Transitions on them are triggered with different delays (to make
-            // visually nice and 'natural' looking transitions), so we need to know
-            // that both of them are finished.
-            css(root, {
-                // to keep the perspective look similar for different scales
-                // we need to 'scale' the perspective, too
-                transform: perspective( config.perspective / targetScale ) + scale( targetScale ),
-                transitionDuration: duration + "ms",
-                transitionDelay: (zoomin ? delay : 0) + "ms"
-            });
-            
-            css(canvas, {
-                transform: rotate(target.rotate, true) + translate(target.translate),
-                transitionDuration: duration + "ms",
-                transitionDelay: (zoomin ? 0 : delay) + "ms"
-            });
-            
-            // Here is a tricky part...
-            //
-            // If there is no change in scale or no change in rotation and translation, it means there was actually
-            // no delay - because there was no transition on `root` or `canvas` elements.
-            // We want to trigger `impress:stepenter` event in the correct moment, so here we compare the current
-            // and target values to check if delay should be taken into account.
-            //
-            // I know that this `if` statement looks scary, but it's pretty simple when you know what is going on
-            // - it's simply comparing all the values.
-            if ( currentState.scale === target.scale ||
-                (currentState.rotate.x === target.rotate.x && currentState.rotate.y === target.rotate.y &&
-                 currentState.rotate.z === target.rotate.z && currentState.translate.x === target.translate.x &&
-                 currentState.translate.y === target.translate.y && currentState.translate.z === target.translate.z) ) {
-                delay = 0;
-            }
-            
-            // store current state
-            currentState = target;
-            activeStep = el;
-            
-            // And here is where we trigger `impress:stepenter` event.
-            // We simply set up a timeout to fire it taking transition duration (and possible delay) into account.
-            //
-            // I really wanted to make it in more elegant way. The `transitionend` event seemed to be the best way
-            // to do it, but the fact that I'm using transitions on two separate elements and that the `transitionend`
-            // event is only triggered when there was a transition (change in the values) caused some bugs and 
-            // made the code really complicated, cause I had to handle all the conditions separately. And it still
-            // needed a `setTimeout` fallback for the situations when there is no transition at all.
-            // So I decided that I'd rather make the code simpler than use shiny new `transitionend`.
-            //
-            // If you want learn something interesting and see how it was done with `transitionend` go back to
-            // version 0.5.2 of impress.js: http://github.com/bartaz/impress.js/blob/0.5.2/js/impress.js
-            window.clearTimeout(stepEnterTimeout);
-            stepEnterTimeout = window.setTimeout(function() {
+            // transition the view and fire the `step:enter` event when done
+            changeView(target, duration, function() {
                 onStepEnter(activeStep);
-            }, duration + delay);
+            });
+            
+            // store active step
+            activeStep = el;
             
             return el;
         };
@@ -562,6 +577,30 @@
             next = next < steps.length ? steps[ next ] : steps[ 0 ];
             
             return goto(next);
+        };
+        
+        // `zoomTo` API function changes current zoom level to a specific percentage
+        var zoomTo = function ( pct, duration ) {
+            var target = {
+                    rotate: {
+                        x: currentState.rotate.x,
+                        y: currentState.rotate.y,
+                        z: currentState.rotate.z
+                    },
+                    translate: {
+                        x: currentState.translate.x,
+                        y: currentState.translate.y,
+                        z: currentState.translate.z
+                    },
+                    scale: pct
+                };
+            
+            changeView(target, duration);
+        };
+        
+        // `zoomBy` API function change current zoom level by a specified factor
+        var zoomBy = function ( factor, duration ) {
+            zoomTo(currentState.scale * factor, duration);
         };
         
         // Adding some useful classes to step elements.
@@ -635,7 +674,9 @@
             init: init,
             goto: goto,
             next: next,
-            prev: prev
+            prev: prev,
+            zoomTo: zoomTo,
+            zoomBy: zoomBy
         });
 
     };
@@ -655,6 +696,11 @@
 // and treat more like a 'plugins'.
 (function ( document, window ) {
     'use strict';
+    
+    // configuration values
+    var config = {
+        zoomAmount: 1.5
+    };
     
     // throttling function calls, by Remy Sharp
     // http://remysharp.com/2010/07/21/throttling-function-calls/
@@ -681,7 +727,7 @@
         
         // Prevent default keydown action when one of supported key is pressed.
         document.addEventListener("keydown", function ( event ) {
-            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) ) {
+            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
                 event.preventDefault();
             }
         }, false);
@@ -702,7 +748,7 @@
         //   as another way to moving to next step... And yes, I know that for the sake of
         //   consistency I should add [shift+tab] as opposite action...
         document.addEventListener("keyup", function ( event ) {
-            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) ) {
+            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
                 switch( event.keyCode ) {
                     case 33: // pg up
                     case 37: // left
@@ -715,6 +761,12 @@
                     case 39: // right
                     case 40: // down
                              api.next();
+                             break;
+                    case 187: // plus
+                             api.zoomBy(config.zoomAmount);
+                             break;
+                    case 189: // minus
+                             api.zoomBy(1 / config.zoomAmount);
                              break;
                 }
                 
