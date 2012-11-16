@@ -699,7 +699,9 @@
     
     // configuration values
     var config = {
-        zoomAmount: 1.5
+        kbdZoomAmount: 1.5,
+        kbdZoomDuration: 250,
+        wheelZoomAmount: 1.1
     };
     
     // throttling function calls, by Remy Sharp
@@ -763,10 +765,10 @@
                              api.next();
                              break;
                     case 187: // plus
-                             api.zoomBy(config.zoomAmount);
+                             api.zoomBy(config.kbdZoomAmount, config.kbdZoomDuration);
                              break;
                     case 189: // minus
-                             api.zoomBy(1 / config.zoomAmount);
+                             api.zoomBy(1 / config.kbdZoomAmount, config.kbdZoomDuration);
                              break;
                 }
                 
@@ -838,6 +840,18 @@
             // force going to active step again, to trigger rescaling
             api.goto( document.querySelector(".active"), 500 );
         }, 250), false);
+        
+        // zoom presentation with scroll wheel
+        var mousewheelevt = (/Firefox/i.test(navigator.userAgent))? "DOMMouseScroll" : "mousewheel"; //FF doesn't recognize mousewheel as of FF3.x
+        window.addEventListener(mousewheelevt, function ( event ) {
+            var delta = event.detail? event.detail * (-120) : event.wheelDelta; //check for detail first so Opera uses that instead of wheelDelta
+
+            if (delta > 0) {
+                api.zoomBy(config.wheelZoomAmount, 0);
+            } else {
+                api.zoomBy(1 / config.wheelZoomAmount, 0);
+            }
+        }, false);
         
     }, false);
         
