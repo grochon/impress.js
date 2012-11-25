@@ -229,7 +229,8 @@
                 prev: empty,
                 next: empty,
                 zoomTo: empty,
-                zoomBy: empty
+                zoomBy: empty,
+                panBy: empty
             };
         }
         
@@ -603,6 +604,63 @@
             zoomTo(currentState.scale * factor, duration);
         };
         
+        var degreesToRadians = function(degrees) {
+            return degrees * (Math.PI / 180);
+        }
+        
+        var cos = function(degrees) {
+            return Math.cos(degreesToRadians(degrees));
+        }
+        
+        var sin = function(degrees) {
+            return Math.sin(degreesToRadians(degrees));
+        }
+        
+        // `panBy` API function change current pan by a specified step in either x or y direction or both
+        var panBy = function (xPanAmount, yPanAmount, duration ) {
+            
+            //extracted the formula by multiplying the following 3d (4x4) rotation and translation matrices:
+            //  R_x(-angleX) * R_y(-angleY) * R_z(-angleZ) * T(dx, dy, 0) * R_z(angleZ) * R_y(angleY) * R_x(angleX) = 
+            //     [1,  0,  0,  cox(angleY) * (dx * cos(angleZ) + dy * sin(angleZ))                                                                        ]
+            // =   [0,  1,  0,  sin(angleX) * sin(angleY) * (dx * cos(angleZ) + dy * sin(angleZ)) - cos(angleX) * (dx * sin(angleZ) - dy * cos(angleZ))    ]
+            //     [0,  0,  1,  cos(angleX) * sin(angleY) * (dx * cos(angleZ) + dy * sin(angleZ)) + sin(angleX) * (dx * sin(angleZ) - dy * cos(angleZ))    ]
+            //
+            // Math is wonderful, isn't it?
+            
+            var dx = xPanAmount,
+                dy = yPanAmount,
+                sinX = sin(currentState.rotate.x),
+                sinY = sin(currentState.rotate.y),
+                sinZ = sin(currentState.rotate.z),
+                cosX = cos(currentState.rotate.x),
+                cosY = cos(currentState.rotate.y),
+                cosZ = cos(currentState.rotate.z),
+                dxCosZ = dx * cosZ,
+                dySinZ = dy * sinZ,
+                dxSinZ = dx * sinZ,
+                dyCosZ = dy * cosZ,
+                dxCosZ_plus_dySinZ = dxCosZ + dySinZ,
+                dxSinZ_minus_dyCosZ = dxSinZ - dyCosZ,
+                translateX = cosY * dxCosZ_plus_dySinZ,
+                translateY = sinX * sinY * dxCosZ_plus_dySinZ - cosX * dxSinZ_minus_dyCosZ,
+                translateZ = cosX * sinY * dxCosZ_plus_dySinZ + sinX * dxSinZ_minus_dyCosZ;
+                
+            var target = {
+                    rotate: {
+                        x: currentState.rotate.x,
+                        y: currentState.rotate.y,
+                        z: currentState.rotate.z
+                    },
+                    translate: {
+                        x: currentState.translate.x + translateX,
+                        y: currentState.translate.y + translateY,
+                        z: currentState.translate.z + translateZ
+                    },
+                    scale: currentState.scale
+                };
+           changeView(target, duration);
+        }
+        
         // Adding some useful classes to step elements.
         //
         // All the steps that have not been shown yet are given `future` class.
@@ -676,7 +734,8 @@
             next: next,
             prev: prev,
             zoomTo: zoomTo,
-            zoomBy: zoomBy
+            zoomBy: zoomBy,
+            panBy: panBy
         });
 
     };
@@ -701,7 +760,8 @@
     var config = {
         kbdZoomAmount: 1.5,
         kbdZoomDuration: 250,
-        wheelZoomAmount: 1.1
+        wheelZoomAmount: 1.1,
+        panningStepAmount: 300
     };
     
     // throttling function calls, by Remy Sharp
@@ -729,8 +789,26 @@
         
         // Prevent default keydown action when one of supported key is pressed.
         document.addEventListener("keydown", function ( event ) {
-            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
+            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || event.keyCode === 187 || event.keyCode === 189 ) {
                 event.preventDefault();
+            }
+            switch(event.keyCode) {
+                case 37: //left
+                        api.panBy(config.panningStepAmount, 0, config.kbdZoomDuration);
+                        event.preventDefault();
+                        break;
+                case 38: //up
+                        api.panBy(0, config.panningStepAmount, config.kbdZoomDuration);
+                        event.preventDefault();
+                        break;
+                case 39: //right
+                        api.panBy(-config.panningStepAmount, 0, config.kbdZoomDuration);
+                        event.preventDefault();
+                        break;
+                case 40: //down
+                        api.panBy(0, -config.panningStepAmount, config.kbdZoomDuration);
+                        event.preventDefault();
+                        break;
             }
         }, false);
         
@@ -753,15 +831,15 @@
             if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
                 switch( event.keyCode ) {
                     case 33: // pg up
-                    case 37: // left
-                    case 38: // up
+                    // case 37: // left
+                    // case 38: // up
                              api.prev();
                              break;
                     case 9:  // tab
                     case 32: // space
                     case 34: // pg down
-                    case 39: // right
-                    case 40: // down
+                    // case 39: // right
+                    // case 40: // down
                              api.next();
                              break;
                     case 187: // plus
