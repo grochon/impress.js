@@ -616,7 +616,9 @@
             return Math.sin(degreesToRadians(degrees));
         }
         
-        // `panBy` API function change current pan by a specified step in either x or y direction or both
+        // `panBy` API function change current pan by a specified amount in either x or y direction or both, within a given duration
+        // the passed in xPanAmount and yPanAmount will be the exact pixel amount as measured or perceived by the user, for example
+        // if the xPanAmount = 100 that means move the whole presentation 100px to the right as measured with the ruler in your debugger
         var panBy = function (xPanAmount, yPanAmount, duration ) {
             
             //extracted the formula by multiplying the following 3d (4x4) rotation and translation matrices:
@@ -627,8 +629,8 @@
             //
             // Math is wonderful, isn't it?
             
-            var dx = xPanAmount,
-                dy = yPanAmount,
+            var dx = xPanAmount / (currentState.scale * windowScale),
+                dy = yPanAmount / (currentState.scale * windowScale),
                 sinX = sin(currentState.rotate.x),
                 sinY = sin(currentState.rotate.y),
                 sinZ = sin(currentState.rotate.z),
@@ -644,7 +646,6 @@
                 translateX = cosY * dxCosZ_plus_dySinZ,
                 translateY = sinX * sinY * dxCosZ_plus_dySinZ - cosX * dxSinZ_minus_dyCosZ,
                 translateZ = cosX * sinY * dxCosZ_plus_dySinZ + sinX * dxSinZ_minus_dyCosZ;
-                
             var target = {
                     rotate: {
                         x: currentState.rotate.x,
@@ -759,9 +760,9 @@
     // configuration values
     var config = {
         kbdZoomAmount: 1.5,
-        kbdZoomDuration: 250,
+        kbdActionDuration: 250,
         wheelZoomAmount: 1.1,
-        panningStepAmount: 300
+        kbdPanningFactor: 100
     };
     
     // throttling function calls, by Remy Sharp
@@ -777,6 +778,54 @@
         };
     };
     
+    var mousePan = function() {
+        var captureMouseCoord = false;
+        var mouseCoord = {previous: {}, current: {}};
+        var panTimer;
+        var pauseEvent = function(event) {
+            if(event.stopPropagation) event.stopPropagation();
+            if(event.preventDefault) event.preventDefault();
+            event.cancelBubble=true;
+            event.returnValue=false;
+            return false;
+        }
+        
+        return {
+            onMouseMove: function( event ) {
+                if(captureMouseCoord) {
+                    mouseCoord.current.x = event.clientX;
+                    mouseCoord.current.y = event.clientY;
+                }
+                pauseEvent(event);
+            },
+            onMouseDown: function( event, api) {
+                mouseCoord.current.x = event.clientX;
+                mouseCoord.current.y = event.clientY;
+                mouseCoord.previous.x = event.clientX;
+                mouseCoord.previous.y = event.clientY;
+                captureMouseCoord = true;
+                var panFn = function() {
+                    //done to prevent the race condition of updating current while reading current
+                    var currX = mouseCoord.current.x;
+                    var currY = mouseCoord.current.y;
+                    if(currX !== mouseCoord.previous.x || currY !== mouseCoord.previous.y) {
+                        api.panBy(currX - mouseCoord.previous.x, currY - mouseCoord.previous.y, 0);
+                        mouseCoord.previous.x = currX;
+                        mouseCoord.previous.y = currY;
+                    }
+                    panTimer = setTimeout(panFn, 30);
+                }
+                panTimer = setTimeout(panFn, 50);
+                pauseEvent(event);
+            },
+            onMouseUp: function( event ) {
+                clearTimeout(panTimer);
+                captureMouseCoord = false;
+                pauseEvent(event);
+            }
+        };
+    }();
+    
     // wait for impress.js to be initialized
     document.addEventListener("impress:init", function (event) {
         // Getting API from event data.
@@ -789,26 +838,25 @@
         
         // Prevent default keydown action when one of supported key is pressed.
         document.addEventListener("keydown", function ( event ) {
-            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || event.keyCode === 187 || event.keyCode === 189 ) {
+             if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
+                if(event.ctrlKey && (event.keyCode >= 37 && event.keyCode <= 40)) {
+                    switch(event.keyCode) {
+                        case 37: //left
+                                api.panBy(config.kbdPanningFactor, 0, config.kbdActionDuration);
+                                break;
+                        case 38: //up
+                                api.panBy(0, config.kbdPanningFactor, config.kbdActionDuration);
+                                break;
+                        case 39: //right
+                                api.panBy(-config.kbdPanningFactor, 0, config.kbdActionDuration);
+                                break;
+                        case 40: //down
+                                api.panBy(0, -config.kbdPanningFactor, config.kbdActionDuration);
+                                break;
+                    }
+                }
+                
                 event.preventDefault();
-            }
-            switch(event.keyCode) {
-                case 37: //left
-                        api.panBy(config.panningStepAmount, 0, config.kbdZoomDuration);
-                        event.preventDefault();
-                        break;
-                case 38: //up
-                        api.panBy(0, config.panningStepAmount, config.kbdZoomDuration);
-                        event.preventDefault();
-                        break;
-                case 39: //right
-                        api.panBy(-config.panningStepAmount, 0, config.kbdZoomDuration);
-                        event.preventDefault();
-                        break;
-                case 40: //down
-                        api.panBy(0, -config.panningStepAmount, config.kbdZoomDuration);
-                        event.preventDefault();
-                        break;
             }
         }, false);
         
@@ -828,31 +876,41 @@
         //   as another way to moving to next step... And yes, I know that for the sake of
         //   consistency I should add [shift+tab] as opposite action...
         document.addEventListener("keyup", function ( event ) {
-            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
+            if ( event.keyCode === 9 || ( event.keyCode >= 32 && event.keyCode <= 34 ) || (!event.ctrlKey && event.keyCode >= 37 && event.keyCode <= 40) || event.keyCode === 187 || event.keyCode === 189 ) {
                 switch( event.keyCode ) {
                     case 33: // pg up
-                    // case 37: // left
-                    // case 38: // up
+                    case 37: // left
+                    case 38: // up
                              api.prev();
                              break;
                     case 9:  // tab
                     case 32: // space
                     case 34: // pg down
-                    // case 39: // right
-                    // case 40: // down
+                    case 39: // right
+                    case 40: // down
                              api.next();
                              break;
                     case 187: // plus
-                             api.zoomBy(config.kbdZoomAmount, config.kbdZoomDuration);
+                             api.zoomBy(config.kbdZoomAmount, config.kbdActionDuration);
                              break;
                     case 189: // minus
-                             api.zoomBy(1 / config.kbdZoomAmount, config.kbdZoomDuration);
+                             api.zoomBy(1 / config.kbdZoomAmount, config.kbdActionDuration);
                              break;
                 }
                 
                 event.preventDefault();
             }
         }, false);
+        
+        
+        document.addEventListener("mousemove", mousePan.onMouseMove);
+        document.addEventListener("mousedown", function( event ) {
+            //if the api variable wasn't global to this function and 
+            //wasn't initialized in the init event, this would have looked
+            //like the mousemove listener, alas...
+            mousePan.onMouseDown(event, api);
+        });
+        document.addEventListener("mouseup", mousePan.onMouseUp);
         
         // delegated handler for clicking on the links to presentation steps
         document.addEventListener("click", function ( event ) {
